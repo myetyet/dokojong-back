@@ -1,23 +1,8 @@
+import asyncio
 import json
 from typing import Any, Literal
 
 from fastapi.websockets import WebSocket, WebSocketDisconnect
-
-
-class Room:
-    def __init__(self, id: str) -> None:
-        self.id = id
-        self.users: dict[str, User] = {}
-        self.occupied_seats: set[int] = set()
-
-    def add_user(self, user_id: str, user: "User") -> None:
-        self.users[user_id] = user
-
-    async def handle(self, data: dict[str, Any]) -> None:
-        pass
-
-    # def broadcast(self, message: ws.Data) -> None:
-    #     ws.broadcast(self.users.values(), message)
 
 
 class User:
@@ -29,6 +14,40 @@ class User:
     async def update_websocket(self, websocket: WebSocket) -> None:
         await WebSocketManager.disconnect(self.ws, "duplicated_login")
         self.ws = websocket
+
+
+class Game:
+    def __init__(self, player_number: int) -> None:
+        self.player_number = player_number
+        self.seats: list[User | None] = [None] * player_number
+
+    def get_players(self) -> list[str]:
+        return ["" if user is None else user.nickname for user in self.seats]
+
+
+class Room:
+    def __init__(self, id: str) -> None:
+        self.id = id
+        self.users: dict[str, User] = {}
+        self.game = Game()
+
+    def broadcast(self, data: dict) -> None:
+        asyncio.gather(*[user.ws.send_json(data) for user in self.users.values()])
+
+    def add_user(self, user_id: str, user: User) -> None:
+        self.users[user_id] = user
+
+    async def take_seat(self, seat: int, user: User) -> None:
+        if seat not in self.seat_map:
+            self.seat_map[seat] = user
+            self.broadcast({"type": "user.take_seat", "nickname": user.nickname, "seat": seat})
+
+    async def send_status(self, user: User) -> None:
+        room_status = {
+            "type": "room.status",
+            "player_info": self.game.get_players(),
+        }
+        user.ws.send_json()
 
 
 class WebSocketManager:
@@ -48,6 +67,8 @@ class WebSocketManager:
     def check_data(self, data: dict) -> bool:
         if data["type"] == "user.register":
             return isinstance(data.get("nickname"), str)
+        if data["type"] == "user.take_seat":
+            return isinstance(data.get("seat"), int)
 
     async def receive(self, websocket: WebSocket) -> dict[str, Any] | None:
         try:
@@ -66,4 +87,9 @@ class WebSocketManager:
             self.rooms[room_id] = room
         user = User(websocket, data["nickname"])
         room.add_user(user_id, user)
+        room.send_status(user)
         return room, user
+
+    async def handle(self, room: Room, user: User, data: dict) -> None:
+        if data["type"] == "user.take_seat":
+            await room.take_seat(data["seat"], user)

@@ -61,7 +61,7 @@ async def ws_handler(websocket: WebSocket, room_id: Annotated[str, Path()], user
             if data["type"] == "user.register":
                 room, user = await ws_manager.register(websocket, room_id, user_id, data)
             else:
-                room.handle(data, user)
+                await ws_manager.handle(room, user, data)
     except WebSocketDisconnect:
         print(room_id, user.nickname)
 
