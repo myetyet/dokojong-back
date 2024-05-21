@@ -2,21 +2,23 @@ import asyncio
 import json
 from typing import Any, Literal, Optional
 
-from fastapi.websockets import WebSocket
+from fastapi.websockets import WebSocket, WebSocketState
 
 
 class User:
     def __init__(self, websocket: WebSocket, nickname: str) -> None:
-        self.ws = websocket
+        self.ws: WebSocket | None = websocket
         self.nickname = nickname
         self.seat = 0
 
-    async def update_websocket(self, websocket: WebSocket) -> None:
-        await WebSocketManager.disconnect(self.ws, "duplicated_login")
-        self.ws = websocket
+    @property
+    def online(self):
+        return False if self.ws is None else self.ws.client_state == WebSocketState.CONNECTED
 
 
 class Room:
+    StatusType = Literal["player", "game"]
+
     def __init__(self, id: str, seat_number: int = 5) -> None:
         self.id = id
         self.users: dict[str, User] = {}
@@ -28,16 +30,17 @@ class Room:
     def broadcast(self, data: dict, exceptions: Optional[dict[User, dict]] = None) -> None:
         if exceptions is None:
             exceptions = {}
-        coroutines = [user.ws.send_json(data) for user in self.users.values() if user not in exceptions]
-        coroutines.extend(user.ws.send_json(data) for user, data in exceptions.items())
-        asyncio.gather(*coroutines)
+        coros1 = [user.ws.send_json(data) for user in self.users.values() if user not in exceptions and user.ws.client_state == WebSocketState.CONNECTED]
+        coros2 = [user.ws.send_json(data) for user, data in exceptions.items()]
+        asyncio.gather(*coros1, *coros2)
 
     def add_user(self, user_id: str, user: User) -> None:
         self.users[user_id] = user
-
-    def set_operator(self, seat: int) -> None:
-        self.operator_seat = seat
-        self.broadcast({"type": "room.set_operator", "seat": seat})
+    
+    def set_operator(self, user: User, broadcast: bool = True) -> None:
+        self.operator = user
+        if broadcast:
+            self.broadcast_status("player")
 
     def take_seat(self, to_seat: int, user: User) -> None:
         from_seat = user.seat
@@ -46,34 +49,43 @@ class Room:
                 self.seats.pop(from_seat)
             self.seats[to_seat] = user
             user.seat = to_seat
-            self.broadcast(
-                data={"type": "user.take_seat", "nickname": user.nickname, "from": from_seat, "to": to_seat},
-                exceptions={user: {"type": "user.take_seat", "nickname": user.nickname, "from": from_seat, "to": to_seat, "me": True}}
-            )
-            if self.operator is None or self.operator is user:
-                if self.operator is None:
-                    self.operator = user
-                self.broadcast({"type": "room.set_operator", "seat": to_seat})
+            if self.operator is None:
+                self.set_operator(user, broadcast=False)
+            self.broadcast_status("player")
 
-
-    async def send_status(self, user: User) -> None:
+    def get_player_status(self, me: User) -> list[dict[str, Any] | None]:
+        info_list = []
         for i in range(1, self.seat_number + 1):
             if i in self.seats:
-                print(i, self.seats[i], self.seats[i].nickname)
+                user = self.seats[i]
+                info_list.append({
+                    "nickname": user.nickname,
+                    "online": user.online,
+                    "me": user is me,
+                    "operator": user is self.operator,
+                })
             else:
-                print(i, "empty")
-        room_status = {
-            "type": "room.status",
-            "nicknames": [self.seats[i].nickname if i in self.seats else "" for i in range(1, self.seat_number + 1)],
-            "seat": {
-                "my": user.seat,
-                "operator": 0 if self.operator is None else self.operator.seat,
-            },
-            "game": {
-                "start": self.game_start,
-            }
+                info_list.append(None)
+        return info_list
+
+    def get_game_status(self) -> dict[str, Any]:
+        return {
+            "start": self.game_start,
         }
-        await user.ws.send_json(room_status)
+
+    async def send_status(self, user: User, *status_types: StatusType) -> None:
+        websocket = user.ws
+        for status_type in status_types:
+            match status_type:
+                case "player":
+                    await websocket.send_json({"type": "player.status", "status": self.get_player_status(me=user)})
+                case "game":
+                    await websocket.send_json({"type": "game.status", "status": self.get_game_status()})
+
+    def broadcast_status(self, *status_type: StatusType) -> None:
+        for user in self.users.values():
+            print(user, str(user.ws.state))
+        asyncio.gather(*[self.send_status(user, *status_type) for user in self.users.values() if user.online])
 
 
 class WebSocketManager:
@@ -82,12 +94,10 @@ class WebSocketManager:
     def __init__(self) -> None:
         self.rooms: dict[str, Room] = {}
 
-    @staticmethod
-    async def connect(websocket: WebSocket) -> None:
+    async def connect(self, websocket: WebSocket) -> None:
         await websocket.accept()
 
-    @staticmethod
-    async def disconnect(websocket: WebSocket, reason: CloseReason) -> None:
+    async def disconnect(self, websocket: WebSocket, reason: CloseReason) -> None:
         await websocket.close(reason=f"close.{reason}")
 
     def check_data(self, data: dict) -> bool:
@@ -111,9 +121,14 @@ class WebSocketManager:
         else:
             room = Room(room_id)
             self.rooms[room_id] = room
-        user = User(websocket, data["nickname"])
-        room.add_user(user_id, user)
-        await room.send_status(user)
+        if user_id in room.users:
+            user = room.users[user_id]
+            await self.disconnect(user.ws, "duplicated_login")
+            user.ws = websocket
+        else:
+            user = User(websocket, data["nickname"])
+            room.add_user(user_id, user)
+        await room.send_status(user, "player", "game")
         return room, user
 
     async def handle(self, room: Room, user: User, data: dict) -> None:

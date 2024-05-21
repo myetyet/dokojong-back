@@ -8,7 +8,6 @@ from fastapi.param_functions import Cookie, Path
 from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.websockets import WebSocket, WebSocketDisconnect
-from uvicorn import Config, Server
 
 from game import WebSocketManager
 
@@ -63,7 +62,8 @@ async def ws_handler(websocket: WebSocket, room_id: Annotated[str, Path()], user
             else:
                 await ws_manager.handle(room, user, data)
     except WebSocketDisconnect:
-        print(room_id, user.nickname)
+        print(room_id, user_id, user.nickname)
+        print(room.users)
 
 
 @app.get("/{_:path}")
@@ -72,4 +72,5 @@ async def other_url(_: str):
 
 
 if __name__ == "__main__":
+    from uvicorn import Config, Server
     Server(Config(app, "0.0.0.0", 8765, reload=True)).run()
