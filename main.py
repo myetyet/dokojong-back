@@ -10,7 +10,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.websockets import WebSocket, WebSocketDisconnect
 from uvicorn import Config, Server
 
-from ws_handler import WebSocketManager
+from game import WebSocketManager
 
 
 root_dir = os.path.realpath(os.path.join(__file__, "..", "..", "dokojong-front", "dist"))
