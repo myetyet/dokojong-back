@@ -49,22 +49,19 @@ async def index(room_id: Optional[str] = None, user_id: Annotated[Optional[str],
 
 @app.websocket("/{room_id}")
 async def ws_handler(websocket: WebSocket, room_id: Annotated[str, Path()], user_id: Annotated[str, Cookie()]):
-    await ws_manager.connect(websocket)
-    room = None
-    user = None
     try:
+        await ws_manager.connect(websocket)
+        room = ws_manager.get_room(room_id)
         while True:
             data = await ws_manager.receive(websocket)
             if data is None:
                 continue
             if data["type"] == "user.register":
-                room, user = await ws_manager.register(websocket, room_id, user_id, data)
-            else:
-                await ws_manager.handle(room, user, data)
+                user = await room.register_user(websocket, user_id, data)
+            elif user is not None:
+                await room.handle_data(user, data)
     except WebSocketDisconnect:
-        print(room_id, user_id, user.nickname)
-        print(room.users)
-
+        room.unregister_user(user_id)
 
 @app.get("/{_:path}")
 async def other_url(_: str):
