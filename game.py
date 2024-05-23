@@ -1,6 +1,7 @@
 import asyncio
+import inspect
 import json
-from typing import Any, Literal, Optional
+from typing import Any, Callable, Literal
 
 from fastapi.websockets import WebSocket, WebSocketState
 
@@ -29,7 +30,23 @@ class Room:
         self.seats: dict[int, User] = {}
         self.operator: User | None = None
         self.game_start = False
-        self.locks = {scope: asyncio.Lock() for scope in ("take_seat", "set_operator")}
+        self.locks: dict[str, asyncio.Lock] = {}
+
+    def pass_lock(func: Callable[..., Any]):
+        params = inspect.signature(func).parameters
+        func_name: str = func.__name__
+        if "lock" not in params or params["lock"].kind != inspect.Parameter.KEYWORD_ONLY:
+            raise RuntimeError(f"'lock' must be a keyword-only argument in function '{func_name}'.")
+
+        def wrapper(self: "Room", *args, **kwargs):
+            if func_name in self.locks:
+                lock = self.locks[func_name]
+            else:
+                lock = asyncio.Lock()
+                self.locks[func_name] = lock
+            return func(self, *args, lock=lock, **kwargs)
+        
+        return wrapper
 
     def get_player_status(self, me: User) -> list[Data | None]:
         info_list = []
@@ -55,7 +72,7 @@ class Room:
         websocket = user.ws
         for status_type in status_types:
             match status_type:
-                case "player":
+                case "players":
                     await websocket.send_json({"type": "player.status", "status": self.get_player_status(me=user)})
                 case "game":
                     await websocket.send_json({"type": "game.status", "status": self.get_game_status()})
@@ -76,17 +93,22 @@ class Room:
         await self.send_status(user, "players", "game")  # send all status to this user
         return user
     
-    async def set_operator(self, user: User, broadcast: bool = True) -> None:
+    async def unregister_user(self, user_id: str) -> None:
+        raise NotImplementedError
+
+    @pass_lock
+    async def set_operator(self, user: User, broadcast: bool = True, *, lock: asyncio.Lock) -> None:
         if self.operator is None or not self.operator.online:
-            async with self.locks["set_operator"]:
+            async with lock:
                 self.operator = user
             if broadcast:
                 await self.broadcast_status("players")
 
-    async def take_seat(self, to_seat: int, user: User) -> None:
+    @pass_lock
+    async def take_seat(self, to_seat: int, user: User, *, lock: asyncio.Lock) -> None:
         from_seat = user.seat
         if from_seat != to_seat and to_seat not in self.seats:
-            async with self.locks["take_seat"]:
+            async with lock:
                 if from_seat > 0:  # this user had taken a seat
                     self.seats.pop(from_seat)
                 self.seats[to_seat] = user
@@ -108,8 +130,6 @@ class WebSocketManager:
         await ws.accept()
 
     def get_room(self, room_id: str) -> Room:
-        # did not use `return self.rooms.setdefault(room_id, Room(room_id))`
-        # to avoid create a useless object `Room(room_id)` in most cases
         if room_id in self.rooms:
             room = self.rooms[room_id]
         else:
