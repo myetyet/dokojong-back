@@ -61,7 +61,7 @@ async def ws_handler(websocket: WebSocket, room_id: Annotated[str, Path()], user
             elif user is not None:
                 await room.handle_data(user, data)
     except WebSocketDisconnect:
-        room.unregister_user(user_id)
+        await room.unregister_user(user_id)
 
 @app.get("/{_:path}")
 async def other_url(_: str):

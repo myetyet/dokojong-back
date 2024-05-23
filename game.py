@@ -94,11 +94,12 @@ class Room:
         await self.send_status(user, "players", "game")  # send all status to this user
         return user
     
-    def unregister_user(self, user_id: str) -> None:
+    async def unregister_user(self, user_id: str) -> None:
         if user_id in self.users:
             user = self.users[user_id]
-            if user.seat > 0:
+            if user.seat > 0:  # user is a player
                 user.ws = None
+                await self.broadcast_status("players")
             else:
                 del self.users[user_id]
 
@@ -122,8 +123,11 @@ class Room:
             await self.broadcast_status("players")
     
     async def handle_data(self, user: User, data: Data) -> None:
-        if data["type"] == "user.take_seat":
-            await self.take_seat(data["seat"], user)
+        match data["type"]:
+            case "user.take_seat":
+                if "nickname" in data:
+                    user.nickname = data["nickname"]
+                await self.take_seat(data["seat"], user)
 
 
 class WebSocketManager:
@@ -142,10 +146,12 @@ class WebSocketManager:
         return room
 
     def check_data(self, data: Data) -> bool:
-        if data["type"] == "user.register":
-            return isinstance(data.get("nickname"), str)
-        if data["type"] == "user.take_seat":
-            return isinstance(data.get("seat"), int)
+        match data["type"]:
+            case "user.register":
+                return isinstance(data.get("nickname"), str)
+            case "user.take_seat":
+                return isinstance(data.get("seat"), int) \
+                    and isinstance(data.get("nickname", ""), str)
 
     async def receive(self, websocket: WebSocket) -> Data | None:
         try:
