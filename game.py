@@ -49,7 +49,7 @@ class Room:
         self.seats: list[User | None] = [None for _ in range(seat_number + 1)]
         self.operator: User | None = None
         self.game_start = False
-        self.locks: dict[str, asyncio.Lock] = {}
+        self.quick_game = True
 
     def seats_iter(self) -> Generator[tuple[int, User | None], None, None]:
         for i in range(1, len(self.seats)):
@@ -74,6 +74,7 @@ class Room:
             "start": self.game_start,
             "min_seats": MIN_SEAT_NUMBER,
             "max_seats": MAX_SEAT_NUMBER,
+            "quick_game": self.quick_game,
         }
 
     async def send_status(self, user: User, status_type: StatusType) -> None:
@@ -176,6 +177,11 @@ class Room:
                 self.operator = me
                 await self.broadcast_status("players")
 
+    async def set_quick_game(self, quick: bool, me: User) -> None:
+        if me is self.operator:
+            self.quick_game = quick
+            await self.broadcast_status("game")
+
     async def handle_data(self, me: User, data: Data) -> None:
         match data["type"]:
             case "user.take_seat":
@@ -190,6 +196,8 @@ class Room:
                 await self.add_seat(me)
             case "player.take_operator":
                 await self.take_operator(me)
+            case "game.set_quick":
+                await self.set_quick_game(data["quick"], me)
 
 
 class WebSocketManager:
@@ -218,6 +226,8 @@ class WebSocketManager:
                 return isinstance(data.get("seat"), int)
             case "room.add_seat" | "player.take_operator":
                 return True
+            case "game.set_quick":
+                return isinstance(data.get("quick"), bool)
         return False
 
     async def receive(self, websocket: WebSocket) -> Data | None:
