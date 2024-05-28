@@ -5,7 +5,7 @@ from typing import Annotated, Optional
 
 from fastapi import FastAPI
 from fastapi.param_functions import Cookie, Path
-from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
+from fastapi.responses import FileResponse, HTMLResponse, PlainTextResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.websockets import WebSocket, WebSocketDisconnect
 
@@ -34,6 +34,7 @@ def check_user_id(user_id: str) -> bool:
 @app.get("/")
 @app.get("/{room_id}")
 async def index(room_id: Optional[str] = None, user_id: Annotated[Optional[str], Cookie()] = None):
+    print(room_id)
     if room_id is None or len(room_id) == 4 and str.isdigit(room_id):
         with open(os.path.join(root_dir, "index.html"), "rb") as fp:
             index_html = fp.read()
@@ -43,7 +44,7 @@ async def index(room_id: Optional[str] = None, user_id: Annotated[Optional[str],
         html_rsp.set_cookie("user_id", user_id, 3 * 24 * 60 * 60, httponly=True)
         return html_rsp
     if room_id == "xxxx":
-        return RedirectResponse("/" + "".join(chr(random.randint(48, 57)) for _ in range(4)))
+        return PlainTextResponse("".join(chr(random.randint(48, 57)) for _ in range(4)))
     return RedirectResponse("/")
 
 
