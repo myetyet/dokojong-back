@@ -195,8 +195,12 @@ class Room:
 
     async def change_settings(self, quick: bool, me: User) -> None:
         if me is self.operator:
-            self.quick_game = quick
-            await self.broadcast_data("game.settings")
+            settings_changed = False
+            if quick != self.quick_game:
+                self.quick_game = quick
+                settings_changed = True
+            if settings_changed:
+                await self.broadcast_data("game")
 
     async def handle_data(self, me: User, data: Data) -> None:
         match data["type"]:
