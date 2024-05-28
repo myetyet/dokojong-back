@@ -177,10 +177,14 @@ class Room:
                 self.operator = me
                 await self.broadcast_status("players")
 
-    async def set_quick_game(self, quick: bool, me: User) -> None:
+    async def change_settings(self, quick: bool, me: User) -> None:
         if me is self.operator:
-            self.quick_game = quick
-            await self.broadcast_status("game")
+            settings_changed = False
+            if quick != self.quick_game:
+                self.quick_game = quick
+                settings_changed = True
+            if settings_changed:
+                await self.broadcast_status("game")
 
     async def handle_data(self, me: User, data: Data) -> None:
         match data["type"]:
@@ -196,8 +200,8 @@ class Room:
                 await self.add_seat(me)
             case "player.take_operator":
                 await self.take_operator(me)
-            case "game.set_quick":
-                await self.set_quick_game(data["quick"], me)
+            case "game.change_settings":
+                await self.change_settings(data["quick"], me)
 
 
 class WebSocketManager:
@@ -226,7 +230,7 @@ class WebSocketManager:
                 return isinstance(data.get("seat"), int)
             case "room.add_seat" | "player.take_operator":
                 return True
-            case "game.set_quick":
+            case "game.change_settings":
                 return isinstance(data.get("quick"), bool)
         return False
 
