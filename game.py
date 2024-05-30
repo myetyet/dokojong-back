@@ -104,7 +104,7 @@ class Room:
     async def register_user(self, ws: WebSocket, user_id: str, data: Data) -> User:
         if user_id in self.users:
             user = self.users[user_id]
-            if user.is_online:  # close the older `ws` when duplicated login
+            if user.is_online and ws is not user.ws:  # close the older `ws` when duplicated login
                 await user.ws.close(reason="close.duplicated_login")
             user.ws = ws
         else:
