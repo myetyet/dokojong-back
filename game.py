@@ -11,16 +11,16 @@ Data = dict[str, Any]
 DataType = Literal[
     "user.init",
     "seat.status",
-    "game.settings", "game.start",
+    "game.settings", "game.status",
 ]
 
 
 class User:
-    def __init__(self, ws: WebSocket, nickname: str, order: int) -> None:
+    def __init__(self, ws: WebSocket) -> None:
         self.ws: WebSocket | None = ws
-        self.nickname = nickname
         self.seat = 0
-        self.order = order
+        self.order = 0
+        self.nickname = ""
 
     @property
     def is_online(self) -> bool:
@@ -29,6 +29,20 @@ class User:
     @property
     def is_player(self) -> bool:
         return self.seat > 0
+    
+    async def update_websocket(self, ws: WebSocket) -> None:
+        if self.is_online:
+            await self.ws.close(reason="close.duplicated_login")
+        self.ws = ws
+    
+    def take_seat(self, seat: int, order: int, nickname: str) -> None:
+        self.seat = seat
+        self.order = order
+        self.nickname = nickname
+
+    def leave_seat(self) -> None:
+        self.seat = 0
+        self.order = 0
 
     async def send_data(self, type: DataType, data: Data) -> None:
         if self.is_online:
@@ -83,13 +97,11 @@ class Room:
 
     async def send_data_to(self, user: User, data_type: DataType) -> None:
         match data_type:
-            case "user.init":
-                await user.send_data(data_type, {"nickname": user.nickname})
             case "seat.status":
                 await user.send_data(data_type, {"status": self.get_seat_status(me=user)})
             case "game.settings":
                 await user.send_data(data_type, self.get_game_settings())
-            case "game.start":
+            case "game.status":
                 await user.send_data(data_type, {"start": self.game_start})
             case _:
                 raise RuntimeError(f"No such data type: {data_type}")
@@ -104,26 +116,21 @@ class Room:
     async def register_user(self, ws: WebSocket, user_id: str, data: Data) -> User:
         if user_id in self.users:
             user = self.users[user_id]
-            if user.is_online and ws is not user.ws:  # close the older `ws` when duplicated login
-                await user.ws.close(reason="close.duplicated_login")
-            user.ws = ws
+            if ws is not user.ws:
+                await user.update_websocket(ws)
         else:
-            nickname = data["nickname"]
-            if len(nickname) == 0:
-                nickname = random.choice(DEFAULT_NICKNAMES)
-            user = User(ws, nickname, next(self.order_issuer))
+            user = User(ws)
             self.users[user_id] = user
-        await asyncio.gather(
-            asyncio.create_task(self.send_data_to(user, "user.init")),
-            asyncio.create_task(self.send_data_to(user, "game.start")),
-            asyncio.create_task(self.send_data_to(user, "game.settings")),
-        )
-        if user.is_player:
-            if self.operator is None:
-                self.operator = user
-            await self.broadcast_data("seat.status")
-        else:
-            await self.send_data_to(user, "seat.status")
+        match data["stage"]:
+            case "hall":
+                if user.is_player:
+                    if self.operator is None:  # `user` offline and then OP offline, left no one online and no OP
+                        self.operator = user
+                    await self.broadcast_data("seat.status")  # in case of the break-in of other users
+                else:
+                    await self.send_data_to(user, "seat.status")
+            case "board":
+                raise NotImplementedError("Register users in \"board\" stage was not implemented.")
         return user
 
     async def unregister_user(self, user_id: str) -> None:
@@ -136,18 +143,18 @@ class Room:
                 del self.users[user_id]
 
     @with_lock
-    async def take_seat(self, to_seat: int, me: User) -> None:
+    async def take_seat(self, me: User, to_seat: int, nickname: str) -> None:
         from_seat = me.seat
         if from_seat != to_seat and self.seats[to_seat] is None:
             if from_seat > 0:  # `me` have taken a seat
                 self.seats[from_seat] = None
             self.seats[to_seat] = me
-            me.seat = to_seat
+            me.take_seat(to_seat, next(self.order_issuer), nickname)
             if self.operator is None:
                 self.operator = me
             await self.broadcast_data("seat.status")
 
-    async def remove_seat(self, seat: int, me: User) -> None:
+    async def remove_seat(self, me: User, seat: int) -> None:
         if me is self.operator and self.seats[seat] is None:
             self.seats.pop(seat)
             for i, player in self.seats_iter():  # adjust players' seats
@@ -155,13 +162,13 @@ class Room:
                     player.seat = i
             await self.broadcast_data("seat.status")
 
-    async def remove_player(self, seat: int, me: User) -> None:
+    async def remove_player(self, me: User, seat: int) -> None:
         player_to_remove = self.seats[seat]
         if player_to_remove is not None:
             remove_myself = player_to_remove is me
             im_operator = me is self.operator
             if remove_myself or im_operator:
-                player_to_remove.seat = 0
+                player_to_remove.leave_seat()
                 self.seats[seat] = None
                 if remove_myself and im_operator:  # hand over OP
                     candidate = None  # find an online candidate with min order
@@ -184,7 +191,7 @@ class Room:
                 self.operator = me
                 await self.broadcast_data("seat.status")
 
-    async def change_settings(self, quick: bool, me: User) -> None:
+    async def change_settings(self, me: User, quick: bool) -> None:
         if me is self.operator:
             settings_changed = False
             if quick != self.quick_game:
@@ -196,19 +203,17 @@ class Room:
     async def handle_data(self, me: User, data: Data) -> None:
         match data["type"]:
             case "user.take_seat":
-                if "nickname" in data:
-                    me.nickname = str(data["nickname"])
-                await self.take_seat(data["seat"], me)
+                await self.take_seat(me, data["seat"], data["nickname"])
             case "room.remove_seat":
-                await self.remove_seat(data["seat"], me)
+                await self.remove_seat(me, data["seat"])
             case "room.remove_player":
-                await self.remove_player(data["seat"], me)
+                await self.remove_player(me, data["seat"])
             case "room.add_seat":
                 await self.add_seat(me)
             case "player.take_operator":
                 await self.take_operator(me)
             case "game.change_settings":
-                await self.change_settings(data["quick"], me)
+                await self.change_settings(me, data["quick"])
 
 
 class WebSocketManager:
@@ -228,13 +233,15 @@ class WebSocketManager:
 
     def check_data(self, data: Data) -> bool:
         match data["type"]:
-            case "user.register" | "room.add_seat" | "player.take_operator":
-                return True
+            case "user.register":
+                return isinstance(data.get("stage"), str)
             case "user.take_seat":
                 return isinstance(data.get("seat"), int) \
-                    and isinstance(data.get("nickname", ""), str)
+                    and isinstance(data.get("nickname"), str)
             case "room.remove_seat" | "room.remove_player":
                 return isinstance(data.get("seat"), int)
+            case "room.add_seat" | "player.take_operator":
+                return True
             case "game.change_settings":
                 return isinstance(data.get("quick"), bool)
         return False
