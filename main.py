@@ -34,7 +34,6 @@ def check_user_id(user_id: str) -> bool:
 @app.get("/")
 @app.get("/{room_id}")
 async def index(room_id: Optional[str] = None, user_id: Annotated[Optional[str], Cookie()] = None):
-    print(room_id)
     if room_id is None or len(room_id) == 4 and str.isdigit(room_id):
         with open(os.path.join(root_dir, "index.html"), "rb") as fp:
             index_html = fp.read()

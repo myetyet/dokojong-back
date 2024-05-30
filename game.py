@@ -11,7 +11,7 @@ Data = dict[str, Any]
 DataType = Literal[
     "user.init",
     "seat.status",
-    "game.settings", "game.status",
+    "game.settings", "game.start",
 ]
 
 
@@ -45,8 +45,6 @@ def with_lock(func: Callable[..., Any]):
     return wrapper
 
 
-MIN_SEAT_NUMBER = 2
-MAX_SEAT_NUMBER = 5
 DEFAULT_NICKNAMES = ("😀", "😄", "😁", "😆")
 
 
@@ -80,14 +78,7 @@ class Room:
     
     def get_game_settings(self) -> Data:
         return {
-            "min_seats": MIN_SEAT_NUMBER,
-            "max_seats": MAX_SEAT_NUMBER,
             "quick_game": self.quick_game,
-        }
-
-    def get_game_status(self) -> Data:
-        return {
-            "start": self.game_start,
         }
 
     async def send_data_to(self, user: User, data_type: DataType) -> None:
@@ -98,8 +89,8 @@ class Room:
                 await user.send_data(data_type, {"status": self.get_seat_status(me=user)})
             case "game.settings":
                 await user.send_data(data_type, self.get_game_settings())
-            case "game.status":
-                await user.send_data(data_type, self.get_game_status())
+            case "game.start":
+                await user.send_data(data_type, {"start": self.game_start})
             case _:
                 raise RuntimeError(f"No such data type: {data_type}")
 
@@ -124,7 +115,7 @@ class Room:
             self.users[user_id] = user
         await asyncio.gather(
             asyncio.create_task(self.send_data_to(user, "user.init")),
-            asyncio.create_task(self.send_data_to(user, "game.status")),
+            asyncio.create_task(self.send_data_to(user, "game.start")),
             asyncio.create_task(self.send_data_to(user, "game.settings")),
         )
         if user.is_player:
@@ -237,15 +228,13 @@ class WebSocketManager:
 
     def check_data(self, data: Data) -> bool:
         match data["type"]:
-            case "user.register":
-                return isinstance(data.get("nickname"), str)
+            case "user.register" | "room.add_seat" | "player.take_operator":
+                return True
             case "user.take_seat":
                 return isinstance(data.get("seat"), int) \
                     and isinstance(data.get("nickname", ""), str)
             case "room.remove_seat" | "room.remove_player":
                 return isinstance(data.get("seat"), int)
-            case "room.add_seat" | "player.take_operator":
-                return True
             case "game.change_settings":
                 return isinstance(data.get("quick"), bool)
         return False
