@@ -1,18 +1,18 @@
 import asyncio
 import itertools
 import json
-from typing import Generator, Optional
+from typing import Callable, Generator
 from typing_extensions import Self
 
 from fastapi.websockets import WebSocket
 
-from general_types import AnyMethod, Data, DataType, Stage
+from general_types import Data, DataType, Stage
 from user import User
 
 
 class Room:
     # Decorators
-    def with_lock(func: AnyMethod):
+    def with_lock(func: Callable):
         """Run async methods with an async lock."""
         lock = asyncio.Lock()
         async def decorator(*args, **kwargs):
@@ -20,18 +20,18 @@ class Room:
                 return await func(*args, **kwargs)
         return decorator
     
-    handlers: dict[str, AnyMethod] = {}
+    handlers: dict[str, Callable] = {}
 
-    def handle(event: str, registry: dict[str, AnyMethod] = handlers):
+    def handle(event: str, registry: dict[str, Callable] = handlers):
         """Register an event with the handler. Must not pass `registry`."""
-        def decorator(func: AnyMethod):
+        def decorator(func: Callable):
             registry[event] = func
             return func
         return decorator
     
     def check_stage(stage: Stage):
         """Check the current stage is the expected one."""
-        def decorator_factory(func: AnyMethod):
+        def decorator_factory(func: Callable):
             async def decorator(self: Self, *args, **kwargs):
                 if self.stage == stage:
                     return await func(self, *args, **kwargs)
@@ -40,16 +40,16 @@ class Room:
     
     def check_operator(postive: bool = True):
         "Check the current user is the operator (postive) or not (negative)."
-        def decorator_factory(func: AnyMethod):
+        def decorator_factory(func: Callable):
             async def decorator(self: Self, target: User, *args, **kwargs):
-                if (target is self.operator) ^ postive:
+                if (target is self.operator) == postive:
                     return await func(self, target, *args, **kwargs)
             return decorator
         return decorator_factory
     
     def check_parameters(**requirements: type):
         """Check types of parameters that will be passed to handlers."""
-        def decorator_factory(func: AnyMethod):
+        def decorator_factory(func: Callable):
             async def decorator(self: Self, target: User, data: Data):
                 params = {}
                 for param_name, param_type in requirements.items():
@@ -235,21 +235,6 @@ class Room:
         if data_type in self.handlers:
             print(data_type)
             await self.handlers[data_type](self, target, data)
-        # match data["type"]:
-        #     case "user.take_seat":
-        #         await self.take_seat(target, data["seat"], data["nickname"])
-        #     case "room.remove_seat":
-        #         await self.remove_seat(target, data["seat"])
-        #     case "room.remove_player":
-        #         await self.remove_player(target, data["seat"])
-        #     case "room.add_seat":
-        #         await self.add_seat(target)
-        #     case "player.take_operator":
-        #         await self.take_operator(target)
-        #     case "game.change_settings":
-        #         await self.change_settings(target, data["quick"])
-        #     case "game.start":
-        #         await self.start_game(target)
 
 
 class WebSocketManager:
@@ -266,21 +251,6 @@ class WebSocketManager:
             room = Room(room_id)
             self.rooms[room_id] = room
         return room
-
-    # def check_data(self, data: Data) -> bool:
-    #     match data["type"]:
-    #         case "user.register":
-    #             return isinstance(data.get("stage"), str)
-    #         case "user.take_seat":
-    #             return isinstance(data.get("seat"), int) \
-    #                 and isinstance(data.get("nickname"), str)
-    #         case "room.remove_seat" | "room.remove_player":
-    #             return isinstance(data.get("seat"), int)
-    #         case "room.add_seat" | "player.take_operator" | "game.start":
-    #             return True
-    #         case "game.change_settings":
-    #             return isinstance(data.get("quick"), bool)
-    #     return False
 
     async def receive(self, websocket: WebSocket) -> Data | None:
         try:
