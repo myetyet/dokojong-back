@@ -1,75 +1,77 @@
 import asyncio
 import itertools
 import json
-from typing import Any, Callable, Generator, Literal
+from typing import Generator, Optional
+from typing_extensions import Self
 
-from fastapi.websockets import WebSocket, WebSocketState
+from fastapi.websockets import WebSocket
 
-
-Data = dict[str, Any]
-DataType = Literal[
-    "user.init",
-    "seat.status",
-    "game.settings", "game.status",
-]
-
-
-class User:
-    def __init__(self, ws: WebSocket) -> None:
-        self.ws: WebSocket | None = ws
-        self.seat = 0
-        self.order = 0
-        self.nickname = ""
-
-    @property
-    def is_online(self) -> bool:
-        return False if self.ws is None else self.ws.client_state == WebSocketState.CONNECTED
-
-    @property
-    def is_player(self) -> bool:
-        return self.seat > 0
-    
-    async def update_websocket(self, ws: WebSocket) -> None:
-        if self.is_online:
-            await self.ws.close(reason="close.duplicated_login")
-        self.ws = ws
-    
-    def take_seat(self, seat: int, order: int, nickname: str) -> None:
-        self.seat = seat
-        self.order = order
-        self.nickname = nickname
-
-    def leave_seat(self) -> None:
-        self.seat = 0
-        self.order = 0
-
-    async def send_data(self, type: DataType, data: Data) -> None:
-        if self.is_online:
-            await self.ws.send_json({"type": type, **data})
-
-
-def with_lock(func: Callable[..., Any]):
-    lock = asyncio.Lock()
-
-    async def wrapper(*args, **kwargs):
-        async with lock:
-            return await func(*args, **kwargs)
-
-    return wrapper
-
-
-DEFAULT_NICKNAMES = ("😀", "😄", "😁", "😆")
+from general_types import AnyMethod, Data, DataType, Stage
+from user import User
 
 
 class Room:
+    # Decorators
+    def with_lock(func: AnyMethod):
+        """Run async methods with an async lock."""
+        lock = asyncio.Lock()
+        async def decorator(*args, **kwargs):
+            async with lock:
+                return await func(*args, **kwargs)
+        return decorator
+    
+    handlers: dict[str, AnyMethod] = {}
+
+    def handle(event: str, registry: dict[str, AnyMethod] = handlers):
+        """Register an event with the handler. Must not pass `registry`."""
+        def decorator(func: AnyMethod):
+            registry[event] = func
+            return func
+        return decorator
+    
+    def check_stage(stage: Stage):
+        """Check the current stage is the expected one."""
+        def decorator_factory(func: AnyMethod):
+            async def decorator(self: Self, *args, **kwargs):
+                if self.stage == stage:
+                    return await func(self, *args, **kwargs)
+            return decorator
+        return decorator_factory
+    
+    def check_operator(postive: bool = True):
+        "Check the current user is the operator (postive) or not (negative)."
+        def decorator_factory(func: AnyMethod):
+            async def decorator(self: Self, target: User, *args, **kwargs):
+                if (target is self.operator) ^ postive:
+                    return await func(self, target, *args, **kwargs)
+            return decorator
+        return decorator_factory
+    
+    def check_parameters(**requirements: type):
+        """Check types of parameters that will be passed to handlers."""
+        def decorator_factory(func: AnyMethod):
+            async def decorator(self: Self, target: User, data: Data):
+                params = {}
+                for param_name, param_type in requirements.items():
+                    param_value = data.get(param_name)
+                    if isinstance(param_value, param_type):
+                        params[param_name] = param_value
+                    else:
+                        return
+                return await func(self, target, **params)
+            return decorator
+        return decorator_factory
+
+    # Instance methods
     def __init__(self, id: str, seat_number: int = 4) -> None:
         self.id = id
+        self.stage: Stage = "waiting"
         self.order_issuer = itertools.count(1)
         self.users: dict[str, User] = {}
         self.seats: list[User | None] = [None for _ in range(seat_number + 1)]
         self.operator: User | None = None
         self.game_start = False
-        self.quick_game = True
+        self.settings = {"quick_game": True}
 
     def seats_iter(self) -> Generator[User | None, None, None]:
         for i in range(1, len(self.seats)):
@@ -91,7 +93,7 @@ class Room:
     
     def get_game_settings(self) -> Data:
         return {
-            "quick_game": self.quick_game,
+            "quick_game": self.settings["quick_game"],
         }
 
     async def send_data_to(self, user: User, data_type: DataType) -> None:
@@ -142,7 +144,11 @@ class Room:
                 del self.users[user_id]
 
     @with_lock
-    async def take_seat(self, me: User, to_seat: int, nickname: str) -> None:
+    @handle("user.take_seat")
+    @check_stage("waiting")
+    @check_parameters(seat=int, nickname=str)
+    async def take_seat(self, me: User, seat: int, nickname: str) -> None:
+        to_seat = seat
         from_seat = me.seat
         if from_seat != to_seat and self.seats[to_seat] is None:
             if from_seat > 0:  # `me` have taken a seat
@@ -153,14 +159,21 @@ class Room:
                 self.operator = me
             await self.broadcast_data("seat.status")
 
+    @handle("room.remove_seat")
+    @check_operator()
+    @check_stage("waiting")
+    @check_parameters(seat=int)
     async def remove_seat(self, me: User, seat: int) -> None:
-        if me is self.operator and self.seats[seat] is None:
+        if self.seats[seat] is None:
             self.seats.pop(seat)
             for i, player in enumerate(self.seats_iter(), start=1):  # adjust players' seats
                 if player is not None:
                     player.seat = i
             await self.broadcast_data("seat.status")
 
+    @handle("room.remove_player")
+    @check_stage("waiting")
+    @check_parameters(seat=int)
     async def remove_player(self, me: User, seat: int) -> None:
         player_to_remove = self.seats[seat]
         if player_to_remove is not None:
@@ -178,48 +191,65 @@ class Room:
                     self.operator = candidate
                 await self.broadcast_data("seat.status")
 
+    @handle("room.add_seat")
+    @check_operator()
+    @check_stage("waiting")
+    @check_parameters()
     async def add_seat(self, me: User) -> None:
-        if me is self.operator:
-            self.seats.append(None)
-            await self.broadcast_data("seat.status")
+        self.seats.append(None)
+        await self.broadcast_data("seat.status")
 
     @with_lock
+    @handle("player.take_operator")
+    @check_operator(False)
+    @check_stage("waiting")
+    @check_parameters()
     async def take_operator(self, me: User) -> None:
-        if me is not self.operator:
-            if self.operator is None or not self.operator.is_online:
-                self.operator = me
-                await self.broadcast_data("seat.status")
+        if self.operator is None or not self.operator.is_online:
+            self.operator = me
+            await self.broadcast_data("seat.status")
 
+    @handle("game.change_settings")
+    @check_operator()
+    @check_stage("waiting")
+    @check_parameters(quick=bool)
     async def change_settings(self, me: User, quick: bool) -> None:
-        if me is self.operator:
-            settings_changed = False
-            if quick != self.quick_game:
-                self.quick_game = quick
-                settings_changed = True
-            if settings_changed:
-                await self.broadcast_data("game.settings")
+        settings_changed = False
+        if quick != self.settings["quick_game"]:
+            self.settings["quick_game"] = quick
+            settings_changed = True
+        if settings_changed:
+            await self.broadcast_data("game.settings")
 
+    @handle("game.start")
+    @check_operator()
+    @check_stage("waiting")
+    @check_parameters()
     async def start_game(self, me: User) -> None:
-        if me is self.operator and not self.game_start:
-            self.game_start = True
-            await self.broadcast_data("game.status")
+        self.game_start = True
+        self.stage = "gaming"
+        await self.broadcast_data("game.status")
 
-    async def handle_data(self, me: User, data: Data) -> None:
-        match data["type"]:
-            case "user.take_seat":
-                await self.take_seat(me, data["seat"], data["nickname"])
-            case "room.remove_seat":
-                await self.remove_seat(me, data["seat"])
-            case "room.remove_player":
-                await self.remove_player(me, data["seat"])
-            case "room.add_seat":
-                await self.add_seat(me)
-            case "player.take_operator":
-                await self.take_operator(me)
-            case "game.change_settings":
-                await self.change_settings(me, data["quick"])
-            case "game.start":
-                await self.start_game(me)
+    async def handle_data(self, target: User, data: Data) -> None:
+        data_type = data["type"]
+        if data_type in self.handlers:
+            print(data_type)
+            await self.handlers[data_type](self, target, data)
+        # match data["type"]:
+        #     case "user.take_seat":
+        #         await self.take_seat(target, data["seat"], data["nickname"])
+        #     case "room.remove_seat":
+        #         await self.remove_seat(target, data["seat"])
+        #     case "room.remove_player":
+        #         await self.remove_player(target, data["seat"])
+        #     case "room.add_seat":
+        #         await self.add_seat(target)
+        #     case "player.take_operator":
+        #         await self.take_operator(target)
+        #     case "game.change_settings":
+        #         await self.change_settings(target, data["quick"])
+        #     case "game.start":
+        #         await self.start_game(target)
 
 
 class WebSocketManager:
@@ -237,26 +267,26 @@ class WebSocketManager:
             self.rooms[room_id] = room
         return room
 
-    def check_data(self, data: Data) -> bool:
-        match data["type"]:
-            case "user.register":
-                return isinstance(data.get("stage"), str)
-            case "user.take_seat":
-                return isinstance(data.get("seat"), int) \
-                    and isinstance(data.get("nickname"), str)
-            case "room.remove_seat" | "room.remove_player":
-                return isinstance(data.get("seat"), int)
-            case "room.add_seat" | "player.take_operator" | "game.start":
-                return True
-            case "game.change_settings":
-                return isinstance(data.get("quick"), bool)
-        return False
+    # def check_data(self, data: Data) -> bool:
+    #     match data["type"]:
+    #         case "user.register":
+    #             return isinstance(data.get("stage"), str)
+    #         case "user.take_seat":
+    #             return isinstance(data.get("seat"), int) \
+    #                 and isinstance(data.get("nickname"), str)
+    #         case "room.remove_seat" | "room.remove_player":
+    #             return isinstance(data.get("seat"), int)
+    #         case "room.add_seat" | "player.take_operator" | "game.start":
+    #             return True
+    #         case "game.change_settings":
+    #             return isinstance(data.get("quick"), bool)
+    #     return False
 
     async def receive(self, websocket: WebSocket) -> Data | None:
         try:
             data = await websocket.receive_json()
         except json.JSONDecodeError:
             return None
-        if isinstance(data, dict) and self.check_data(data):
+        if isinstance(data, dict) and isinstance(data.get("type"), str):
             return data
         return None
