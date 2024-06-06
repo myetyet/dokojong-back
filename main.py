@@ -52,17 +52,14 @@ async def ws_handler(websocket: WebSocket, room_id: Annotated[str, Path()], user
     try:
         await ws_manager.connect(websocket)
         room = ws_manager.get_room(room_id)
-        await websocket.send_json({"type": "room.stage", "stage": room.stage})  # primitive handshake
+        user = await room.register_user(websocket, user_id)
         while True:
             data = await ws_manager.receive(websocket)
-            if data is None:
-                continue
-            if data["type"] == "user.register":
-                user = await room.register_user(websocket, user_id)
-            elif user is not None:
+            if data is not None:
                 await room.handle_data(user, data)
     except WebSocketDisconnect:
         await room.unregister_user(user_id)
+
 
 @app.get("/{_:path}")
 async def other_url(_: str):

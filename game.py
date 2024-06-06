@@ -1,5 +1,6 @@
 import asyncio
 import inspect
+from functools import partial
 from typing import Generator
 from typing_extensions import Self
 
@@ -72,7 +73,7 @@ class Room:
 
 
     # General methods
-    def __init__(self, id: str, seat_number: int = 4) -> None:
+    def __init__(self, id: str, seat_number: int = 2) -> None:  # change to 4 for release
         self.id = id
         self.stage: Stage = "waiting"
         self.order_issuer = 0
@@ -109,19 +110,21 @@ class Room:
 
     def get_game_status(self) -> Data:
         return {
-            
+            "active": [player.seat for player in self.active_players],
+            "scores": self.player_scores[1:],
         }
 
     async def send_data_to(self, user: User, data_type: DataType) -> None:
+        send_data = partial(user.send_data, data_type)
         match data_type:
             case "room.stage":
-                await user.send_data(data_type, {"stage": self.stage})
+                await send_data({"stage": self.stage})
             case "seat.status":
-                await user.send_data(data_type, {"status": self.get_seat_status(me=user)})
+                await send_data({"status": self.get_seat_status(me=user)})
             case "game.settings":
-                await user.send_data(data_type, self.get_game_settings())
+                await send_data(self.get_game_settings())
             case "game.status":
-                await user.send_data(data_type, self.get_game_status())
+                await send_data(self.get_game_status())
             case _:
                 raise RuntimeError(f"No such data type: {data_type}")
 
@@ -135,24 +138,13 @@ class Room:
     async def register_user(self, ws: WebSocket, user_id: str) -> User:
         if user_id in self.users:
             user = self.users[user_id]
-            if ws is not user.ws:
-                await user.update_ws(ws)
+            if ws is user.ws:
+                return user
+            await user.update_ws(ws)
         else:
             user = User(ws)
             self.users[user_id] = user
-        match self.stage:
-            case "waiting":
-                if user.is_player:
-                    if self.operator is None:  # `user` offline and then OP leaves, left no one online and no OP
-                        self.operator = user
-                    await self.broadcast_data("seat.status")  # in case of the break-in of other users
-                else:
-                    await self.send_data_to(user, "seat.status")
-            case "gaming":
-                await asyncio.gather(
-                    self.send_data_to(user, "game.status"),
-                    self.send_data_to(user, self.last_data_type)
-                )
+        await self.send_data_to(user, "room.stage")
         return user
 
     async def unregister_user(self, user_id: str) -> None:
@@ -168,6 +160,25 @@ class Room:
         data_type = data["type"]
         if data_type in self.handlers:
             await self.handlers[data_type](self, target, data)
+
+
+    # Handlers for stage init
+    @add_handler("stage.init")
+    @make_handler
+    async def stage_init(self, me: User) -> None:
+        match self.stage:
+            case "waiting":
+                if me.is_player:
+                    if self.operator is None:  # `user` offline and then OP leaves, left no one online and no OP
+                        self.operator = me
+                    await self.broadcast_data("seat.status")  # in case of the break-in of other users
+                else:
+                    await self.send_data_to(me, "seat.status")
+            case "gaming":
+                await asyncio.gather(
+                    self.send_data_to(me, "game.status"),
+                    self.send_data_to(me, self.last_data_type)
+                )
 
 
     # Handlers for waiting stage
@@ -263,7 +274,7 @@ class Room:
         self.stage = "gaming"
         self.last_data_type = "tiles.setup"
         self.active_players.update(players)
-        await self.broadcast_data("game.start")
+        await self.broadcast_data("room.stage")
 
 
     # Handlers for gaming stage
