@@ -1,12 +1,17 @@
 from typing import Any, Callable, Literal
 
 
+AnyMethod = Callable[..., Any]
+
 Data = dict[str, Any]
 
 DataType = Literal[
-    "user.init",
+    "room.stage",
     "seat.status",
-    "game.settings", "game.status",
+    "game.settings",
+    "game.start",
+    "game.status",
+    "tiles.setup",
 ]
 
 Stage = Literal["waiting", "gaming"]

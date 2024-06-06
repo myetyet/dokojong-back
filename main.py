@@ -9,7 +9,7 @@ from fastapi.responses import FileResponse, HTMLResponse, PlainTextResponse, Red
 from fastapi.staticfiles import StaticFiles
 from fastapi.websockets import WebSocket, WebSocketDisconnect
 
-from game import WebSocketManager
+from ws_manager import WebSocketManager
 
 
 root_dir = os.path.realpath(os.path.join(__file__, "..", "..", "dokojong-front", "dist"))
@@ -52,12 +52,13 @@ async def ws_handler(websocket: WebSocket, room_id: Annotated[str, Path()], user
     try:
         await ws_manager.connect(websocket)
         room = ws_manager.get_room(room_id)
+        await websocket.send_json({"type": "room.stage", "stage": room.stage})  # primitive handshake
         while True:
             data = await ws_manager.receive(websocket)
             if data is None:
                 continue
             if data["type"] == "user.register":
-                user = await room.register_user(websocket, user_id, data)
+                user = await room.register_user(websocket, user_id)
             elif user is not None:
                 await room.handle_data(user, data)
     except WebSocketDisconnect:
