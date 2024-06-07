@@ -35,6 +35,9 @@ class User:
         self.seat = 0
         self.order = 0
 
-    async def send_data(self, type: DataType, data: Data) -> None:
+    async def send_data(self, type: DataType, data: Optional[Data] = None) -> None:
         if self.is_online:
-            await self.ws.send_json({"type": type, **data})
+            json = {"type": type}
+            if data is not None:
+                json.update(data)
+            await self.ws.send_json(json)

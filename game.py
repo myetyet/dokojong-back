@@ -82,8 +82,10 @@ class Room:
         self.operator: User | None = None
         self.settings = {"quick_game": True}
         self.last_data_type: DataType | None = None
-        self.active_players: set[int] = set()
+        self.active_players: set[User] = set()
         self.player_scores: list[tuple[int, int]] = []
+        self.player_tiles: list[tuple[bool, bool, bool, bool, bool]] = []
+        self.player_dogs: list[int] = []
 
     def seats_iter(self) -> Generator[User | None, None, None]:
         for i in range(1, len(self.seats)):
@@ -108,10 +110,10 @@ class Room:
             "quick_game": self.settings["quick_game"],
         }
 
-    def get_game_status(self) -> Data:
+    def get_game_scores(self) -> Data:
         return {
-            "active": [player.seat for player in self.active_players],
-            "scores": self.player_scores[1:],
+            # "active": sorted(player.seat for player in self.active_players),
+            "scores": [{"score": score[0], "penalty": score[1]} for score in self.player_scores],
         }
 
     async def send_data_to(self, user: User, data_type: DataType) -> None:
@@ -123,8 +125,10 @@ class Room:
                 await send_data({"status": self.get_seat_status(me=user)})
             case "game.settings":
                 await send_data(self.get_game_settings())
-            case "game.status":
-                await send_data(self.get_game_status())
+            case "game.scores":
+                await send_data(self.get_game_scores())
+            case "tiles.setup":
+                await send_data()
             case _:
                 raise RuntimeError(f"No such data type: {data_type}")
 
@@ -175,10 +179,9 @@ class Room:
                 else:
                     await self.send_data_to(me, "seat.status")
             case "gaming":
-                await asyncio.gather(
-                    self.send_data_to(me, "game.status"),
-                    self.send_data_to(me, self.last_data_type)
-                )
+                await self.send_data_to(me, "seat.status")
+                await self.send_data_to(me, "game.scores")
+                await self.send_data_to(me, self.last_data_type)
 
 
     # Handlers for waiting stage
@@ -274,6 +277,8 @@ class Room:
         self.stage = "gaming"
         self.last_data_type = "tiles.setup"
         self.active_players.update(players)
+        self.player_scores = [(0, 0) for _ in range(len(players))]
+        self.player_dogs = [-1 for _ in range(len(players))]
         await self.broadcast_data("room.stage")
 
 
