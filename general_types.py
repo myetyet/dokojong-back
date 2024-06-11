@@ -6,12 +6,9 @@ AnyMethod = Callable[..., Any]
 Data = dict[str, Any]
 
 DataType = Literal[
-    "room.stage",
+    "room.status",
     "seat.status",
     "game.settings",
-    "game.start",
     "game.status",
     "tiles.setup",
 ]
-
-Stage = Literal["waiting", "gaming"]

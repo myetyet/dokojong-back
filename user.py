@@ -8,7 +8,7 @@ from general_types import Data, DataType
 class User:
     def __init__(self, ws: WebSocket) -> None:
         self.ws: WebSocket | None = ws
-        self.seat = 0
+        self.seat = -1
         self.nickname = ""
         self.order = 0
 
@@ -18,7 +18,7 @@ class User:
 
     @property
     def is_player(self) -> bool:
-        return self.seat > 0
+        return self.seat > -1
     
     async def update_ws(self, ws: WebSocket) -> None:
         if self.is_online:
@@ -32,7 +32,7 @@ class User:
             self.order = order
 
     def leave_seat(self) -> None:
-        self.seat = 0
+        self.seat = -1
         self.order = 0
 
     async def send_data(self, type: DataType, data: Optional[Data] = None) -> None:
