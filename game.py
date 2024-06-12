@@ -128,6 +128,8 @@ class Room:
                 await send_data(self.get_game_status())
             case "tiles.setup":
                 await send_data({"active": self.player_active})
+            case "dog.place":
+                await send_data({"position": self.player_dogs[user.seat]})
             case _:
                 raise RuntimeError(f"No such data type: {data_type}")
 
@@ -165,6 +167,12 @@ class Room:
             await self.handlers[data_type](self, target, data)
         else:
             print(f'Handler {data_type} not found.')
+
+    def set_active(self, *seats: int) -> None:
+        for i in range(len(self.seats)):
+            self.player_active[i] = False
+        for seat in seats:
+            self.player_active[seat] = True
 
 
     # Handlers for waiting hall (gaming: False)
@@ -269,11 +277,11 @@ class Room:
                 return
             players.append(player)
         self.gaming = True
-        self.leader = player[0]
+        self.leader = players[0]
         self.doors_opened = [False] * 5
-        self.player_scores = [[0, 3] for _ in range(len(player))]
-        self.player_tiles = [[None] * 5 for _ in range(len(player))]
-        self.player_dogs = [-1] * len(player)
+        self.player_scores = [[0, 3] for _ in range(len(players))]
+        self.player_tiles = [[None] * 5 for _ in range(len(players))]
+        self.player_dogs = [-1] * len(players)
         self.last_message = "tiles.setup"
         self.player_active = [True] * len(players)
         await self.broadcast_data("room.status")
@@ -291,13 +299,19 @@ class Room:
         )
 
     @with_lock
-    @add_handler("tiles.setup")
+    @add_handler("dog.place")
     @check_active
     @check_gaming(True)
     @make_handler
-    async def tiles_setup(self, me: User, pos: int) -> None:
-        self.player_dogs[me.seat] = pos
+    async def place_dog(self, me: User, position: int) -> None:
+        self.player_dogs[me.seat] = position
+        await self.send_data_to(me, "dog.place")
+        self.player_tiles[me.seat] = [None] * 5
         self.player_active[me.seat] = False
-        await self.broadcast_data("game.status")
         if not any(self.player_active):
-            self.last_message = 
+            self.last_message = "player.act"
+            self.set_active(self.leader.seat)
+        await asyncio.gather(
+            asyncio.create_task(self.broadcast_data("game.status")),
+            asyncio.create_task(self.broadcast_data(self.last_message))
+        )

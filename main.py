@@ -18,9 +18,9 @@ app.mount("/assets", StaticFiles(directory=os.path.join(root_dir, "assets")), na
 ws_manager = WebSocketManager()
 
 
-@app.get("/vite.svg")
+@app.get("/favicon.svg")
 async def favicon():
-    return FileResponse(os.path.join(root_dir, "vite.svg"))
+    return FileResponse(os.path.join(root_dir, "favicon.svg"))
 
 
 def check_user_id(user_id: str) -> bool:

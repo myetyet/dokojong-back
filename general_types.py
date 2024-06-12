@@ -11,4 +11,5 @@ DataType = Literal[
     "game.settings",
     "game.status",
     "tiles.setup",
+    "dog.place",
 ]
