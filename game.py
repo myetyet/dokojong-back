@@ -129,7 +129,7 @@ class Room:
             case "tiles.setup":
                 await send_data({"active": self.player_active})
             case "dog.place":
-                await send_data({"position": self.player_dogs[user.seat]})
+                await send_data({"position": self.player_dogs[user.seat] if user.is_player else -1})  # user.seat > -1
             case _:
                 raise RuntimeError(f"No such data type: {data_type}")
 
@@ -295,6 +295,7 @@ class Room:
         await asyncio.gather(
             asyncio.create_task(self.send_data_to(me, "seat.status")),
             asyncio.create_task(self.send_data_to(me, "game.status")),
+            asyncio.create_task(self.send_data_to(me, "dog.place")),
             asyncio.create_task(self.send_data_to(me, self.last_message))
         )
 
