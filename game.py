@@ -130,6 +130,8 @@ class Room:
                 await send_data({"active": self.player_active})
             case "dog.place":
                 await send_data({"position": self.player_dogs[user.seat] if user.is_player else -1})  # user.seat > -1
+            case "player.act":
+                await send_data({"active": self.player_active})
             case _:
                 raise RuntimeError(f"No such data type: {data_type}")
 
@@ -150,6 +152,8 @@ class Room:
             user = User(ws)
             self.users[user_id] = user
         await self.send_data_to(user, "room.status")
+        if user.is_player:
+            await self.broadcast_data("seat.status")
         return user
 
     async def unregister_user(self, user_id: str) -> None:
