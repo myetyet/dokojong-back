@@ -28,6 +28,7 @@ class Room:
         self.player_scores: list[list[int]]
         self.player_tiles: list[list[bool | None]]
         self.player_dogs: list[int]
+        self.game_log: Data
 
 
     # Decorators
@@ -113,7 +114,11 @@ class Room:
             "doors": self.doors_opened,
             "scores": self.player_scores,
             "tiles": self.player_tiles,
+            "log": self.game_log,
         }
+
+    def unique_active_player_seat(self) -> int:
+        return self.player_active.index(True)
 
     async def send_data_to(self, user: User, data_type: DataType) -> None:
         send_data = partial(user.send_data, data_type)
@@ -132,6 +137,8 @@ class Room:
                 await send_data({"position": self.player_dogs[user.seat] if user.is_player else -1})  # user.seat > -1
             case "player.act":
                 await send_data({"active": self.player_active})
+            case "player.ok":
+                await send_data({"player": self.unique_active_player_seat()})
             case _:
                 raise RuntimeError(f"No such data type: {data_type}")
 
@@ -288,6 +295,7 @@ class Room:
         self.player_dogs = [-1] * len(players)
         self.last_message = "tiles.setup"
         self.player_active = [True] * len(players)
+        self.game_log = {"action": "start"}
         await self.broadcast_data("room.status")
 
 
@@ -313,6 +321,7 @@ class Room:
         await self.send_data_to(me, "dog.place")
         self.player_tiles[me.seat] = [None] * 5
         self.player_active[me.seat] = False
+        self.game_log = {"act": "place", "player": me.seat}
         if not any(self.player_active):
             self.last_message = "player.act"
             self.set_active(self.leader.seat)
@@ -320,3 +329,19 @@ class Room:
             asyncio.create_task(self.broadcast_data("game.status")),
             asyncio.create_task(self.broadcast_data(self.last_message))
         )
+
+    @add_handler("player.ok")
+    @check_active
+    @check_gaming(True)
+    @make_handler
+    async def action_ok(self, me: User) -> None:
+        next_seat = (me.seat + 1) % len(self.seats)
+        if next_seat == self.leader.seat:
+            raise NotImplementedError
+        else:
+            self.set_active(next_seat)
+            self.game_log = {"action": "ok", "player": me.seat}
+            await asyncio.gather(
+                asyncio.create_task(self.broadcast_data("game.status")),
+                asyncio.create_task(self.broadcast_data(self.last_message))
+            )
