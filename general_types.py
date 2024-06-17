@@ -13,4 +13,5 @@ DataType = Literal[
     "tiles.setup",
     "dog.place",
     "player.act",
+    "doors.opened",
 ]

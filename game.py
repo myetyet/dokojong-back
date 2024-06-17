@@ -139,6 +139,8 @@ class Room:
                 await send_data({"active": self.player_active})
             case "player.ok":
                 await send_data({"player": self.unique_active_player_seat()})
+            case "doors.opened":
+                await send_data()
             case _:
                 raise RuntimeError(f"No such data type: {data_type}")
 
@@ -306,6 +308,7 @@ class Room:
     async def board_init(self, me: User) -> None:
         await asyncio.gather(
             asyncio.create_task(self.send_data_to(me, "seat.status")),
+            asyncio.create_task(self.send_data_to(me, "game.settings")),
             asyncio.create_task(self.send_data_to(me, "game.status")),
             asyncio.create_task(self.send_data_to(me, "dog.place")),
             asyncio.create_task(self.send_data_to(me, self.last_message))
@@ -321,7 +324,7 @@ class Room:
         await self.send_data_to(me, "dog.place")
         self.player_tiles[me.seat] = [None] * 5
         self.player_active[me.seat] = False
-        self.game_log = {"act": "place", "player": me.seat}
+        self.game_log = {"action": "place", "player": me.seat}
         if not any(self.player_active):
             self.last_message = "player.act"
             self.set_active(self.leader.seat)
@@ -345,3 +348,32 @@ class Room:
                 asyncio.create_task(self.broadcast_data("game.status")),
                 asyncio.create_task(self.broadcast_data(self.last_message))
             )
+
+    @add_handler("doors.add")
+    @check_active
+    @check_gaming(True)
+    @make_handler
+    async def doors_add(self, me: User, doors: list) -> None:
+        if len(doors) != 5 or any(map(lambda door: not isinstance(door, bool), doors)):
+            return
+        opened_count = 0
+        opened_door = -1
+        for i in range(5):
+            if doors[i] != self.doors_opened[i]:
+                if doors[i]:
+                    opened_count += 1
+                    opened_door = i
+                else:
+                    return
+        if opened_count != 1:
+            return
+        self.doors_opened[opened_door] = True
+        await self.send_data_to(me, "doors.opened")
+        self.set_active((me.seat + 1) % len(self.seats))
+        self.game_log = {"action": "add", "player": me.seat, "door": opened_door}
+        self.leader = me
+        await asyncio.gather(
+            asyncio.create_task(self.broadcast_data("game.status")),
+            asyncio.create_task(self.broadcast_data(self.last_message))
+        )
+        
